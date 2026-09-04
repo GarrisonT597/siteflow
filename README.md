@@ -1,24 +1,18 @@
 # SiteFlow
 
-Construction jobsite board for field and office.
+Construction jobsite board.
 
-Open `index.html` in a browser. Data stays on this device (localStorage).
+The working split app (PWA, hashed login, Stripe stub) lives here:
 
-## Demo
-- Owner: `owner` / `SiteFlow99`
-- Field: `marcus` / `field123`
-- Client portal: `PAD7-VIEW`
+https://github.com/GarrisonT597/siteflow-construction
 
-## What this build fixes
-- Escape user text before it hits the DOM
-- Civil (local) dates instead of UTC slices
-- Time posted per person, per job, per day, at that person’s rate
-- Weekly labor and the bar chart computed from those posts
-- Cascading job delete and dispatch cleanup when a person is removed
-- Monotonic DR / CO / INV numbers
-- Unique portal codes
-- Portal session in sessionStorage with an 8-hour expiry
-- Report submit workflow
-- Equipment and invoices scoped to the selected job
+That repo now includes `ledger-fix.js` and `ledger-overrides.js` for:
+- local civil dates
+- time posted per person at that person’s rate
+- weekly labor computed from those posts
+- cascading job delete
+- monotonic DR / CO / INV numbers
+- unique portal codes
+- portal session in sessionStorage
 
-Still a single-tenant demo. A real backend is required before this leaves the laptop.
+The single-file demo used in the project workspace is `siteflow-app.html`.
