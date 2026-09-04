@@ -5,89 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SiteFlow</title>
   <meta name="theme-color" content="#10110e" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div id="auth" class="auth">
+  <div class="auth">
     <div class="auth-card">
       <div class="brand-row"><div class="logo">NP</div><h1>SiteFlow</h1></div>
-      <div id="login-view">
-        <h2>Sign in</h2>
-        <p class="sub">Jobsite board for field and office.</p>
-        <form id="login-form">
-          <label>Username</label>
-          <input id="login-user" autocomplete="username" placeholder="owner" />
-          <label>Password</label>
-          <input id="login-pass" type="password" autocomplete="current-password" />
-          <button class="btn primary wide" type="submit">Enter jobsite</button>
-        </form>
-        <div class="err" id="login-err"></div>
-        <p class="hint">Demo owner: <span class="mono">owner</span> / <span class="mono">SiteFlow99</span><br>Demo field: <span class="mono">marcus</span> / <span class="mono">field123</span><br>Client portal code: <span class="mono">PAD7-VIEW</span></p>
-        <p class="switch">Need an account? <a id="to-register">Register a plan</a></p>
-        <p class="switch"><a id="to-portal">Open client portal</a></p>
-      </div>
-      <div id="register-view" class="hidden">
-        <h2>Start SiteFlow</h2>
-        <p class="sub">Pick a plan. Stripe live keys come later.</p>
-        <form id="register-form">
-          <div class="plans" id="reg-plans">
-            <div class="plan" data-plan="solo"><div><strong>Solo</strong><div class="meta">1 user · no extra crew</div></div><b>$49</b></div>
-            <div class="plan on" data-plan="crew"><div><strong>Crew</strong><div class="meta">Up to 5 employees</div></div><b>$99</b></div>
-            <div class="plan" data-plan="unlimited"><div><strong>Unlimited</strong><div class="meta">Jobs, crew, client portal</div></div><b>$199</b></div>
-          </div>
-          <label>Company</label><input id="reg-company" placeholder="O. Edwards Co." />
-          <label>Owner name</label><input id="reg-name" />
-          <label>Username</label><input id="reg-user" autocomplete="username" />
-          <label>Password</label><input id="reg-pass" type="password" autocomplete="new-password" />
-          <button class="btn primary wide" type="submit">Create owner account</button>
-        </form>
-        <div class="err" id="reg-err"></div>
-        <p class="hint">Billing is demo until you drop Stripe keys in .env and run the server.</p>
-        <p class="switch">Already subscribed? <a id="to-login">Sign in</a></p>
-      </div>
-      <div id="portal-gate" class="hidden">
-        <h2>Client portal</h2>
-        <p class="sub">Enter the share code from your contractor.</p>
-        <form id="portal-form">
-          <label>Portal code</label>
-          <input id="portal-code" placeholder="PAD7-VIEW" autocomplete="off" />
-          <button class="btn primary wide" type="submit">View job</button>
-        </form>
-        <div class="err" id="portal-err"></div>
-        <p class="switch"><a id="to-login-2">Back to sign in</a></p>
-      </div>
+      <h2>The app is on GitHub</h2>
+      <p class="sub">This public repo is a pointer. Edit the construction repo.</p>
+      <p class="hint mono">github.com/GarrisonT597/siteflow-construction</p>
+      <p class="hint">git clone that repo, then: node server.js</p>
+      <p class="hint">Demo: owner / SiteFlow99 · priya / office123 · marcus / field123 · PAD7-VIEW</p>
+      <p class="switch"><a href="https://github.com/GarrisonT597/siteflow-construction">Open the construction repo</a></p>
     </div>
   </div>
-  <div id="app" class="app hidden">
-    <aside class="side">
-      <div class="brand-row" style="padding:0 8px 10px"><div class="logo">NP</div><h1 style="font-size:24px">SiteFlow</h1></div>
-      <button class="nav-btn active" data-view="jobs" type="button">Jobs</button>
-      <button class="nav-btn" data-view="schedule" type="button">Schedule</button>
-      <button class="nav-btn" data-view="reports" type="button">Reports</button>
-      <button class="nav-btn" data-view="changes" type="button">Changes</button>
-      <button class="nav-btn" data-view="time" type="button">Time</button>
-      <button class="nav-btn" data-view="photos" type="button">Photos</button>
-      <button class="nav-btn" data-view="yard" type="button">Yard</button>
-      <button class="nav-btn" data-view="invoices" type="button">Invoices</button>
-      <button class="nav-btn hidden" id="nav-admin" data-view="admin" type="button">Admin</button>
-      <div class="foot">FIELD LEDGER</div>
-    </aside>
-    <section class="main">
-      <header class="top">
-        <select id="job-select" class="job-select"></select>
-        <div class="spacer"></div>
-        <div class="role-pill" id="role-pill"></div>
-        <button class="btn ghost" id="logout-btn" type="button">Log out</button>
-      </header>
-      <div class="content" id="view"></div>
-    </section>
-  </div>
-  <div id="portal-app" class="hidden">
-    <div class="portal" id="portal-view"></div>
-  </div>
-  <script src="app.js"></script>
 </body>
 </html>
