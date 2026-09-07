@@ -68,14 +68,39 @@
   function jobName(jobId) {
     return (DB?.jobs || []).find((j) => j.id === jobId)?.name || "—";
   }
+  function role() {
+    const r = SESSION && SESSION.role;
+    return r === "field" ? "foreman" : r;
+  }
   function canEdit() {
-    return SESSION && (SESSION.role === "owner" || SESSION.role === "office");
+    return role() === "owner" || role() === "office";
+  }
+  function canApprove() {
+    return canEdit();
+  }
+  function canMoney() {
+    return canEdit();
   }
   function isOwner() {
-    return SESSION && SESSION.role === "owner";
+    return role() === "owner";
+  }
+  function isOffice() {
+    return role() === "office";
+  }
+  function isForeman() {
+    return role() === "foreman";
   }
   function isField() {
-    return SESSION && SESSION.role === "field";
+    return isForeman();
+  }
+  function canDeleteJobs() {
+    return isOwner();
+  }
+  function canDeleteCrew() {
+    return isOwner();
+  }
+  function statusClass(s) {
+    return "status " + String(s || "").replace(/\s+/g, "");
   }
 
   function cacheSave() {
@@ -166,7 +191,7 @@
     await api("/api/" + collection + "/" + id, { method: "DELETE" });
     DB[collection] = (DB[collection] || []).filter((x) => x.id !== id);
     if (collection === "jobs") {
-      ["schedule", "reports", "changes", "time", "photos", "equipment", "invoices", "safety", "materials"].forEach(
+      ["schedule", "reports", "changes", "time", "photos", "equipment", "equipmentHours", "invoices", "safety", "materials"].forEach(
         (k) => {
           DB[k] = (DB[k] || []).filter((x) => x.jobId !== id);
         }
@@ -189,8 +214,18 @@
     $("portal-app").classList.add("hidden");
     $("app").classList.remove("hidden");
     $("side-company").textContent = COMPANY?.name || "—";
-    $("role-pill").textContent = (SESSION?.role || "") + (OFFLINE ? " · offline" : "");
-    $("nav-admin").classList.toggle("hidden", !isOwner());
+    const r = role() || "";
+    $("role-pill").textContent = r.toUpperCase() + (OFFLINE ? " · offline" : "");
+    document.querySelectorAll(".nav-btn[data-roles]").forEach((btn) => {
+      const allowed = (btn.getAttribute("data-roles") || "").split(",").map((s) => s.trim());
+      const ok = allowed.includes(r);
+      btn.classList.toggle("hidden", !ok);
+    });
+    const admin = $("nav-admin");
+    if (admin) admin.classList.toggle("hidden", !isOwner());
+    // If current view is hidden for role, bounce to jobs
+    const activeBtn = document.querySelector('.nav-btn[data-view="' + (CURRENT_VIEW || "jobs") + '"]');
+    if (activeBtn && activeBtn.classList.contains("hidden")) CURRENT_VIEW = "jobs";
     refreshNotifBadge();
     fillJobSelect();
     setView(CURRENT_VIEW || "jobs");
@@ -239,6 +274,7 @@
     const map = {
       jobs: renderJobs,
       schedule: renderSchedule,
+      crew: renderCrew,
       reports: renderReports,
       changes: renderChanges,
       time: renderTime,
