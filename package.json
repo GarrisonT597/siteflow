@@ -1,0 +1,21 @@
+{
+  "name": "siteflow-next",
+  "version": "2.0.0",
+  "description": "SiteFlow — multi-tenant construction ops (local production-shaped)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check lib/store.js && node --check lib/auth.js && node --check lib/seed.js && node --check public/app.js && node --check public/service-worker.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^11.0.5"
+  }
+}
