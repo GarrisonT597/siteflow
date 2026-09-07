@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SiteFlow — Construction Ops</title>
+  <meta name="theme-color" content="#10110e" />
+  <meta name="description" content="Multi-company construction field + office operations" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="auth" class="auth">
+    <div class="auth-card">
+      <div class="brand-row">
+        <div class="logo">SF</div>
+        <div>
+          <h1>SiteFlow</h1>
+          <div class="brand-tag">FIELD + OFFICE OPS</div>
+        </div>
+      </div>
+
+      <div id="login-view">
+        <h2>Sign in</h2>
+        <p class="sub">Jobsite board for crew and office — multi-company.</p>
+        <form id="login-form">
+          <label for="login-user">Username</label>
+          <input id="login-user" autocomplete="username" placeholder="owner" />
+          <label for="login-pass">Password</label>
+          <input id="login-pass" type="password" autocomplete="current-password" />
+          <button class="btn primary wide" type="submit">Enter jobsite</button>
+        </form>
+        <div class="err" id="login-err" role="alert"></div>
+        <div class="demo-box">
+          <div class="demo-title">Demo accounts</div>
+          <div class="demo-row"><span class="mono">owner</span> / <span class="mono">SiteFlow99</span> <em>owner · O. Edwards</em></div>
+          <div class="demo-row"><span class="mono">priya</span> / <span class="mono">office123</span> <em>office</em></div>
+          <div class="demo-row"><span class="mono">marcus</span> / <span class="mono">field123</span> <em>field</em></div>
+          <div class="demo-row"><span class="mono">alex</span> / <span class="mono">Ridge99</span> <em>owner · Ridge Build</em></div>
+          <div class="demo-row">Portal: <span class="mono">PAD7-VIEW</span></div>
+        </div>
+        <p class="switch">Need an account? <a id="to-register" href="#">Register a company</a></p>
+        <p class="switch"><a id="to-portal" href="#">Open client portal</a></p>
+      </div>
+
+      <div id="register-view" class="hidden">
+        <h2>Start SiteFlow</h2>
+        <p class="sub">Onboard a company. Stripe billing is stubbed — no live charges.</p>
+        <form id="register-form">
+          <div class="plans" id="reg-plans">
+            <div class="plan" data-plan="solo"><div><strong>Solo</strong><div class="meta">1 user · no extra crew</div></div><b>$49</b></div>
+            <div class="plan on" data-plan="crew"><div><strong>Crew</strong><div class="meta">Up to 5 employees</div></div><b>$99</b></div>
+            <div class="plan" data-plan="unlimited"><div><strong>Unlimited</strong><div class="meta">Jobs, crew, client portal</div></div><b>$199</b></div>
+          </div>
+          <label for="reg-company">Company</label>
+          <input id="reg-company" placeholder="O. Edwards Co." />
+          <label for="reg-name">Owner name</label>
+          <input id="reg-name" />
+          <label for="reg-user">Username</label>
+          <input id="reg-user" autocomplete="username" />
+          <label for="reg-pass">Password</label>
+          <input id="reg-pass" type="password" autocomplete="new-password" />
+          <button class="btn primary wide" type="submit">Create owner account</button>
+        </form>
+        <div class="err" id="reg-err" role="alert"></div>
+        <p class="hint">Each company gets isolated jobs, crew, and ledgers on the server.</p>
+        <p class="switch">Already subscribed? <a id="to-login" href="#">Sign in</a></p>
+      </div>
+
+      <div id="portal-gate" class="hidden">
+        <h2>Client portal</h2>
+        <p class="sub">Enter the share code from your contractor.</p>
+        <form id="portal-form">
+          <label for="portal-code">Portal code</label>
+          <input id="portal-code" placeholder="PAD7-VIEW" autocomplete="off" />
+          <button class="btn primary wide" type="submit">View job</button>
+        </form>
+        <div class="err" id="portal-err" role="alert"></div>
+        <p class="switch"><a id="to-login-2" href="#">Back to sign in</a></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="side">
+      <div class="brand-row side-brand">
+        <div class="logo">SF</div>
+        <div>
+          <h1>SiteFlow</h1>
+          <div class="brand-tag" id="side-company">—</div>
+        </div>
+      </div>
+      <nav class="nav" aria-label="Main">
+        <button class="nav-btn active" data-view="jobs" type="button">Jobs</button>
+        <button class="nav-btn" data-view="schedule" type="button">Schedule</button>
+        <button class="nav-btn" data-view="reports" type="button">Reports</button>
+        <button class="nav-btn" data-view="changes" type="button">Changes</button>
+        <button class="nav-btn" data-view="time" type="button">Time</button>
+        <button class="nav-btn" data-view="photos" type="button">Photos</button>
+        <button class="nav-btn" data-view="yard" type="button">Yard</button>
+        <button class="nav-btn" data-view="invoices" type="button">Invoices</button>
+        <button class="nav-btn" data-view="safety" type="button">Safety</button>
+        <button class="nav-btn" data-view="materials" type="button">Materials</button>
+        <button class="nav-btn" data-view="subs" type="button">Subs</button>
+        <button class="nav-btn" data-view="exports" type="button">Exports</button>
+        <button class="nav-btn hidden" id="nav-admin" data-view="admin" type="button">Admin</button>
+      </nav>
+      <div class="foot">FIELD LEDGER</div>
+    </aside>
+    <section class="main">
+      <header class="top">
+        <select id="job-select" class="job-select" aria-label="Selected job"></select>
+        <div class="spacer"></div>
+        <button class="btn ghost notif-btn" id="notif-btn" type="button" title="Notifications">
+          Bell <span class="badge hidden" id="notif-badge">0</span>
+        </button>
+        <div class="role-pill" id="role-pill"></div>
+        <button class="btn ghost" id="logout-btn" type="button">Log out</button>
+      </header>
+      <div class="content" id="view"></div>
+    </section>
+  </div>
+
+  <div id="portal-app" class="hidden">
+    <div class="portal" id="portal-view"></div>
+  </div>
+
+  <div id="notif-panel" class="notif-panel hidden" aria-live="polite">
+    <div class="notif-head">
+      <strong>Notifications</strong>
+      <button class="btn sm ghost" id="notif-read-all" type="button">Mark all read</button>
+      <button class="btn sm ghost" id="notif-close" type="button">Close</button>
+    </div>
+    <div id="notif-list" class="notif-list"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
