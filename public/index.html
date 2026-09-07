@@ -39,7 +39,7 @@
           <div class="demo-title">Demo accounts</div>
           <div class="demo-row"><span class="mono">owner</span> / <span class="mono">SiteFlow99</span> <em>owner · O. Edwards</em></div>
           <div class="demo-row"><span class="mono">priya</span> / <span class="mono">office123</span> <em>office</em></div>
-          <div class="demo-row"><span class="mono">marcus</span> / <span class="mono">field123</span> <em>field</em></div>
+          <div class="demo-row"><span class="mono">marcus</span> / <span class="mono">field123</span> <em>foreman</em></div>
           <div class="demo-row"><span class="mono">alex</span> / <span class="mono">Ridge99</span> <em>owner · Ridge Build</em></div>
           <div class="demo-row">Portal: <span class="mono">PAD7-VIEW</span></div>
         </div>
@@ -97,17 +97,18 @@
       <nav class="nav" aria-label="Main">
         <button class="nav-btn active" data-view="jobs" type="button">Jobs</button>
         <button class="nav-btn" data-view="schedule" type="button">Schedule</button>
+        <button class="nav-btn" data-view="crew" type="button">Crew</button>
         <button class="nav-btn" data-view="reports" type="button">Reports</button>
         <button class="nav-btn" data-view="changes" type="button">Changes</button>
         <button class="nav-btn" data-view="time" type="button">Time</button>
         <button class="nav-btn" data-view="photos" type="button">Photos</button>
         <button class="nav-btn" data-view="yard" type="button">Yard</button>
-        <button class="nav-btn" data-view="invoices" type="button">Invoices</button>
+        <button class="nav-btn" data-view="invoices" data-roles="owner,office" type="button">Invoices</button>
         <button class="nav-btn" data-view="safety" type="button">Safety</button>
-        <button class="nav-btn" data-view="materials" type="button">Materials</button>
+        <button class="nav-btn" data-view="materials" data-roles="owner,office" type="button">Materials</button>
         <button class="nav-btn" data-view="subs" type="button">Subs</button>
-        <button class="nav-btn" data-view="exports" type="button">Exports</button>
-        <button class="nav-btn hidden" id="nav-admin" data-view="admin" type="button">Admin</button>
+        <button class="nav-btn" data-view="exports" data-roles="owner,office" type="button">Exports</button>
+        <button class="nav-btn hidden" id="nav-admin" data-view="admin" data-roles="owner" type="button">Admin</button>
       </nav>
       <div class="foot">FIELD LEDGER</div>
     </aside>
