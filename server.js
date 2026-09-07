@@ -1,7 +1,6 @@
 "use strict";
 
 const path = require("path");
-const fs = require("fs");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const multer = require("multer");
@@ -27,11 +26,15 @@ const COLLECTIONS = [
   "time",
   "photos",
   "equipment",
+  "equipmentHours",
   "invoices",
   "safety",
   "materials",
   "subcontractors",
 ];
+
+/** Collections foreman may create */
+const FOREMAN_CREATE = new Set(["reports", "time", "photos", "safety", "equipmentHours", "changes"]);
 
 function uid(p) {
   return p + "-" + uuidv4().slice(0, 8);
@@ -45,11 +48,7 @@ function nextNumber(company, key, prefix) {
 }
 
 function ensureCompanyShape(co) {
-  if (!co.counters) co.counters = { dr: 1, co: 1, inv: 1, po: 1, talk: 1 };
-  COLLECTIONS.forEach((k) => {
-    if (!Array.isArray(co[k])) co[k] = [];
-  });
-  return co;
+  return seed.enrichCompany ? seed.enrichCompany(co) : co;
 }
 
 function csvEscape(v) {
@@ -64,6 +63,33 @@ function toCsv(rows, headers) {
     lines.push(headers.map((h) => csvEscape(r[h])).join(","));
   });
   return lines.join("\n") + "\n";
+}
+
+function hoursFromRange(start, end) {
+  if (!start || !end) return null;
+  const [sh, sm] = String(start).split(":").map(Number);
+  const [eh, em] = String(end).split(":").map(Number);
+  if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return null;
+  let mins = eh * 60 + em - (sh * 60 + sm);
+  if (mins < 0) mins += 24 * 60;
+  return Math.round((mins / 60) * 100) / 100;
+}
+
+function uniquePortalCode(company, preferred) {
+  const used = new Set(
+    (company.jobs || []).map((j) => String(j.portalCode || "").toUpperCase()).filter(Boolean)
+  );
+  let code = String(preferred || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, "")
+    .slice(0, 12);
+  if (code && !used.has(code)) return code;
+  for (let i = 0; i < 40; i++) {
+    const candidate = uid("PORT").toUpperCase().replace(/-/g, "").slice(0, 9);
+    if (!used.has(candidate)) return candidate;
+  }
+  return "P-" + Date.now().toString(36).toUpperCase();
 }
 
 function audit(req, action, entity, detail) {
@@ -92,9 +118,44 @@ function notify(companyId, userId, type, title, body) {
   });
 }
 
+function roleOf(req) {
+  return auth.normalizeRole(req.session && req.session.role);
+}
+
+function parseCrewOnSite(v) {
+  if (Array.isArray(v)) return v.map((s) => String(s).trim()).filter(Boolean);
+  return String(v || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 async function main() {
   store.ensureDirs();
   await seed.seedIfNeeded(false);
+  auth.migrateUserRoles();
+  if (seed.upgradeCompaniesToV3) seed.upgradeCompaniesToV3();
+
+  // Migrate crew roles field → foreman in company data
+  const companies = store.listCompanies();
+  let coChanged = false;
+  Object.keys(companies).forEach((id) => {
+    const co = ensureCompanyShape(companies[id]);
+    co.crew.forEach((c) => {
+      if (c.role === "field") {
+        c.role = "foreman";
+        coChanged = true;
+      }
+    });
+    co.changes.forEach((ch) => {
+      if (ch.status === "open") {
+        ch.status = "submitted";
+        coChanged = true;
+      }
+    });
+    companies[id] = co;
+  });
+  if (coChanged) store.write("companies", companies);
 
   const app = express();
   app.use(express.json({ limit: "2mb" }));
@@ -126,7 +187,8 @@ async function main() {
 
   function requireRole(...roles) {
     return (req, res, next) => {
-      if (!req.session || !roles.includes(req.session.role)) {
+      const r = roleOf(req);
+      if (!req.session || !roles.includes(r)) {
         return res.status(403).json({ error: "Forbidden" });
       }
       next();
@@ -147,6 +209,17 @@ async function main() {
     const user = store.findUser((u) => u.username.toLowerCase() === username);
     if (!user || !(await auth.verifyPassword(password, user.passwordHash))) {
       return res.status(401).json({ error: "Invalid username or password" });
+    }
+    // normalize stored role
+    if (user.role === "field") {
+      user.role = "foreman";
+      user.permissions = auth.defaultPermissions("foreman");
+      const users = store.getUsers();
+      const i = users.findIndex((u) => u.id === user.id);
+      if (i >= 0) {
+        users[i] = user;
+        store.saveUsers(users);
+      }
     }
     const session = auth.createSession(user);
     res.cookie(auth.SESSION_COOKIE, session.token, auth.cookieOptions());
@@ -175,7 +248,6 @@ async function main() {
     });
   });
 
-  // Company onboarding (register owner + new tenant)
   app.post("/api/auth/register", async (req, res) => {
     const companyName = String(req.body.company || "").trim();
     const name = String(req.body.name || "").trim();
@@ -194,7 +266,18 @@ async function main() {
     const userId = uid("u");
     const crewId = uid("c");
     const company = seed.emptyCompany(companyId, companyName, plan);
-    company.crew = [{ id: crewId, name, role: "owner", rate: 75, userId }];
+    company.crew = [
+      {
+        id: crewId,
+        name,
+        role: "owner",
+        rate: 75,
+        userId,
+        phone: "",
+        active: true,
+        available: true,
+      },
+    ];
     store.saveCompany(company);
 
     const user = {
@@ -230,7 +313,7 @@ async function main() {
     });
   });
 
-  // ---------- Company bootstrap ----------
+  // ---------- Bootstrap ----------
   app.get("/api/bootstrap", requireAuth, loadCompany, (req, res) => {
     const user = store.findUser((u) => u.id === req.session.userId);
     const notifications = store.getNotifications(req.session.companyId, req.session.userId);
@@ -242,7 +325,7 @@ async function main() {
         plan: req.company.plan,
         counters: req.company.counters,
       },
-      data: Object.fromEntries(COLLECTIONS.map((k) => [k, req.company[k]])),
+      data: Object.fromEntries(COLLECTIONS.map((k) => [k, req.company[k] || []])),
       plans: PLANS,
       notifications,
       unread: notifications.filter((n) => !n.read).length,
@@ -257,11 +340,14 @@ async function main() {
     res.json({ id: req.company.id, name: req.company.name, plan: req.company.plan });
   });
 
-  // ---------- Generic CRUD helpers ----------
+  // ---------- Generic CRUD ----------
   function crudList(collection) {
     app.get("/api/" + collection, requireAuth, loadCompany, (req, res) => {
       let items = req.company[collection] || [];
       if (req.query.jobId) items = items.filter((x) => x.jobId === req.query.jobId);
+      if (req.query.crewId) items = items.filter((x) => x.crewId === req.query.crewId);
+      if (req.query.equipmentId) items = items.filter((x) => x.equipmentId === req.query.equipmentId);
+      // Foreman sees all time/equipmentHours for transparency on assigned jobs, but UI filters
       res.json(items);
     });
   }
@@ -276,14 +362,20 @@ async function main() {
 
   function crudCreate(collection, prepare) {
     app.post("/api/" + collection, requireAuth, loadCompany, (req, res) => {
-      if (req.session.role === "field" && !["reports", "time", "photos", "safety"].includes(collection)) {
-        return res.status(403).json({ error: "Field role cannot create " + collection });
+      const role = roleOf(req);
+      if (role === "foreman" && !FOREMAN_CREATE.has(collection)) {
+        return res.status(403).json({ error: "Foreman cannot create " + collection });
       }
-      const item = prepare ? prepare(req, req.body) : { ...req.body, id: uid(collection.slice(0, 1)) };
-      if (!item.id) item.id = uid(collection.slice(0, 3));
-      req.company[collection].push(item);
-      store.saveCompany(req.company);
-      res.status(201).json(item);
+      try {
+        const item = prepare ? prepare(req, req.body) : { ...req.body, id: uid(collection.slice(0, 1)) };
+        if (!item.id) item.id = uid(collection.slice(0, 3));
+        req.company[collection].push(item);
+        store.saveCompany(req.company);
+        res.status(201).json(item);
+      } catch (err) {
+        const status = err.status || 400;
+        return res.status(status).json({ error: err.message || err.error || "Error" });
+      }
     });
   }
 
@@ -306,23 +398,61 @@ async function main() {
 
   function crudDelete(collection) {
     app.delete("/api/" + collection + "/:id", requireAuth, loadCompany, (req, res) => {
-      if (req.session.role === "field") return res.status(403).json({ error: "Forbidden" });
+      const role = roleOf(req);
+      if (collection === "jobs" && !auth.canDeleteJobs(req.session)) {
+        return res.status(403).json({ error: "Only owner can delete jobs" });
+      }
+      if (collection === "crew" && !auth.canDeleteCrew(req.session)) {
+        return res.status(403).json({ error: "Only owner can delete crew" });
+      }
+      if (role === "foreman") {
+        // Foreman may delete own pending time / own draft reports / own photos / own equipment hours
+        const item = (req.company[collection] || []).find((x) => x.id === req.params.id);
+        if (!item) return res.status(404).json({ error: "Not found" });
+        if (collection === "time") {
+          if (item.crewId !== req.session.crewId || item.status === "approved") {
+            return res.status(403).json({ error: "Forbidden" });
+          }
+        } else if (collection === "reports") {
+          if (item.by !== req.session.name || item.status !== "draft") {
+            return res.status(403).json({ error: "Forbidden" });
+          }
+        } else if (collection === "photos" || collection === "equipmentHours") {
+          // allow
+        } else {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+      }
+
       const before = req.company[collection].length;
       req.company[collection] = req.company[collection].filter((x) => x.id !== req.params.id);
       if (req.company[collection].length === before) return res.status(404).json({ error: "Not found" });
-      // cascade job delete
+
       if (collection === "jobs") {
         const jid = req.params.id;
-        ["schedule", "reports", "changes", "time", "photos", "equipment", "invoices", "safety", "materials"].forEach(
-          (k) => {
-            req.company[k] = (req.company[k] || []).filter((x) => x.jobId !== jid);
-          }
-        );
+        [
+          "schedule",
+          "reports",
+          "changes",
+          "time",
+          "photos",
+          "equipment",
+          "equipmentHours",
+          "invoices",
+          "safety",
+          "materials",
+        ].forEach((k) => {
+          req.company[k] = (req.company[k] || []).filter((x) => x.jobId !== jid);
+        });
       }
       if (collection === "crew") {
         const cid = req.params.id;
-        req.company.schedule = req.company.schedule.filter((x) => x.crewId !== cid);
-        req.company.time = req.company.time.filter((x) => x.crewId !== cid);
+        req.company.schedule = (req.company.schedule || []).filter((x) => x.crewId !== cid);
+        req.company.time = (req.company.time || []).filter((x) => x.crewId !== cid);
+      }
+      if (collection === "equipment") {
+        const eid = req.params.id;
+        req.company.equipmentHours = (req.company.equipmentHours || []).filter((x) => x.equipmentId !== eid);
       }
       store.saveCompany(req.company);
       res.json({ ok: true });
@@ -333,96 +463,212 @@ async function main() {
   crudList("jobs");
   crudGet("jobs");
   crudCreate("jobs", (req, body) => {
-    const code =
-      String(body.portalCode || "")
-        .trim()
-        .toUpperCase() || uid("PORT").toUpperCase().replace("-", "").slice(0, 9);
+    if (roleOf(req) === "foreman") {
+      const e = new Error("Foreman cannot create jobs");
+      e.status = 403;
+      throw e;
+    }
     return {
       id: uid("j"),
       name: String(body.name || "Untitled job").trim(),
       client: String(body.client || "").trim(),
       address: String(body.address || "").trim(),
       status: body.status || "active",
-      portalCode: code,
+      portalCode: uniquePortalCode(req.company, body.portalCode),
       start: body.start || null,
       end: body.end || null,
     };
   });
-  crudUpdate("jobs");
+  crudUpdate("jobs", (req) => {
+    if (roleOf(req) === "foreman") return { status: 403, error: "Forbidden" };
+    return null;
+  });
   crudDelete("jobs");
 
   // Crew
   crudList("crew");
   crudGet("crew");
   crudCreate("crew", (req, body) => {
+    if (roleOf(req) === "foreman") {
+      const e = new Error("Forbidden");
+      e.status = 403;
+      throw e;
+    }
     const plan = PLANS[req.company.plan] || PLANS.crew;
     if (req.company.crew.length >= plan.crewCap) {
       const err = new Error("Crew cap reached for plan");
       err.status = 400;
       throw err;
     }
+    let role = auth.normalizeRole(body.role || "foreman");
+    if (role === "owner" && roleOf(req) !== "owner") role = "foreman";
     return {
       id: uid("c"),
       name: String(body.name || "").trim(),
-      role: body.role || "field",
+      role,
       rate: Number(body.rate) || 0,
       userId: body.userId || null,
+      phone: String(body.phone || "").trim(),
+      active: body.active !== false,
+      available: body.available !== false,
     };
   });
-  crudUpdate("crew");
+  crudUpdate("crew", (req, prev, next) => {
+    if (roleOf(req) === "foreman") return { status: 403, error: "Forbidden" };
+    next.role = auth.normalizeRole(next.role || prev.role);
+    next.phone = next.phone != null ? String(next.phone) : prev.phone || "";
+    next.active = next.active !== false;
+    next.available = next.available !== false;
+    next.rate = Number(next.rate) || 0;
+    return null;
+  });
   crudDelete("crew");
 
   // Schedule
   crudList("schedule");
-  crudCreate("schedule", (_req, body) => ({
-    id: uid("s"),
-    jobId: body.jobId,
-    date: body.date,
-    crewId: body.crewId,
-    note: body.note || "",
-  }));
-  crudUpdate("schedule");
+  crudCreate("schedule", (req, body) => {
+    if (roleOf(req) === "foreman") {
+      const e = new Error("Foreman cannot assign schedule");
+      e.status = 403;
+      throw e;
+    }
+    return {
+      id: uid("s"),
+      jobId: body.jobId,
+      date: body.date || seed.todayLocal(),
+      crewId: body.crewId,
+      note: body.note || "",
+    };
+  });
+  crudUpdate("schedule", (req) => {
+    if (roleOf(req) === "foreman") return { status: 403, error: "Forbidden" };
+    return null;
+  });
   crudDelete("schedule");
 
-  // Reports
+  // Reports — draft / submit / approve
   crudList("reports");
-  crudCreate("reports", (req, body) => ({
-    id: uid("r"),
-    jobId: body.jobId,
-    number: nextNumber(req.company, "dr", "DR"),
-    date: body.date || seed.todayLocal(),
-    weather: body.weather || "",
-    workDone: body.workDone || "",
-    issues: body.issues || "",
-    status: body.status || "draft",
-    by: body.by || req.session.name,
-  }));
-  crudUpdate("reports");
+  crudCreate("reports", (req, body) => {
+    const status = body.status === "submitted" ? "submitted" : "draft";
+    const item = {
+      id: uid("r"),
+      jobId: body.jobId,
+      number: nextNumber(req.company, "dr", "DR"),
+      date: body.date || seed.todayLocal(),
+      weather: body.weather || "",
+      workDone: body.workDone || "",
+      issues: body.issues || "",
+      materialsUsed: body.materialsUsed || "",
+      delays: body.delays || "",
+      crewOnSite: parseCrewOnSite(body.crewOnSite),
+      photoIds: Array.isArray(body.photoIds) ? body.photoIds : [],
+      status,
+      by: body.by || req.session.name,
+      submittedAt: status === "submitted" ? new Date().toISOString() : null,
+      approvedBy: null,
+      approvedAt: null,
+    };
+    audit(req, "report.created", item.number, item.status + " · " + (item.workDone || "").slice(0, 60));
+    if (status === "submitted") {
+      notify(req.session.companyId, null, "report_submitted", item.number + " submitted", "Daily report ready for review");
+    }
+    return item;
+  });
+  crudUpdate("reports", (req, prev, next) => {
+    const role = roleOf(req);
+    // Foreman: only own draft → submit or edit draft
+    if (role === "foreman") {
+      if (prev.by !== req.session.name) return { status: 403, error: "Not your report" };
+      if (prev.status === "approved") return { status: 403, error: "Already approved" };
+      if (next.status === "approved" || next.status === "rejected") {
+        return { status: 403, error: "Foreman cannot approve reports" };
+      }
+      if (prev.status === "submitted" && next.status === "draft") {
+        // allow retract? no — keep submitted unless office
+        return { status: 403, error: "Already submitted" };
+      }
+      if (next.status === "submitted" && prev.status === "draft") {
+        next.submittedAt = new Date().toISOString();
+        audit(req, "report.submitted", next.number, next.date);
+        notify(req.session.companyId, null, "report_submitted", next.number + " submitted", "Daily report ready for review");
+      }
+      next.crewOnSite = parseCrewOnSite(next.crewOnSite);
+      return null;
+    }
+    // Office/owner approve
+    if (prev.status !== next.status) {
+      if (next.status === "submitted" && prev.status === "draft") {
+        next.submittedAt = new Date().toISOString();
+        audit(req, "report.submitted", next.number, next.date);
+      }
+      if (next.status === "approved") {
+        next.approvedBy = req.session.name;
+        next.approvedAt = new Date().toISOString();
+        audit(req, "report.approved", next.number, next.date);
+        notify(req.session.companyId, null, "report_approved", next.number + " approved", "Daily report approved");
+      }
+      if (next.status === "draft" && prev.status === "submitted") {
+        // office can send back
+        next.submittedAt = null;
+      }
+    }
+    next.crewOnSite = parseCrewOnSite(next.crewOnSite);
+    return null;
+  });
   crudDelete("reports");
 
-  // Changes (COs) — audit on approve/reject/money
+  // Changes (COs) — draft → submitted → approved/rejected
   crudList("changes");
   crudCreate("changes", (req, body) => {
+    const role = roleOf(req);
+    let status = body.status || "draft";
+    if (role === "foreman") {
+      // Foreman can only draft (or submit draft)
+      if (status !== "draft" && status !== "submitted") status = "draft";
+    }
+    if (status === "open") status = "submitted";
     const item = {
       id: uid("co"),
       jobId: body.jobId,
       number: nextNumber(req.company, "co", "CO"),
       title: String(body.title || "").trim(),
       amount: Number(body.amount) || 0,
-      status: body.status || "open",
+      status,
       description: body.description || "",
+      by: body.by || req.session.name,
+      createdAt: new Date().toISOString(),
     };
-    audit(req, "co.created", item.number, item.title + " · $" + item.amount);
+    audit(req, "co.created", item.number, item.title + " · $" + item.amount + " · " + item.status);
     return item;
   });
   crudUpdate("changes", (req, prev, next) => {
-    if (req.session.role === "field") return { status: 403, error: "Forbidden" };
+    const role = roleOf(req);
+    if (next.status === "open") next.status = "submitted";
+    if (role === "foreman") {
+      if (prev.by && prev.by !== req.session.name && prev.status !== "draft") {
+        return { status: 403, error: "Forbidden" };
+      }
+      // Foreman may edit draft / submit own draft
+      if (prev.status !== "draft" && prev.status !== "submitted") {
+        return { status: 403, error: "Cannot edit approved/rejected CO" };
+      }
+      if (next.status === "approved" || next.status === "rejected") {
+        return { status: 403, error: "Foreman cannot approve COs" };
+      }
+      if (prev.status === "draft" && next.status === "submitted") {
+        audit(req, "co.submitted", next.number, next.title);
+        notify(req.session.companyId, null, "co_submitted", next.number + " submitted", next.title + " · $" + next.amount);
+      }
+      return null;
+    }
     if (prev.status !== next.status) {
       if (next.status === "approved") {
         audit(req, "co.approved", next.number, next.title + " · $" + next.amount);
         notify(req.session.companyId, null, "co_approved", next.number + " approved", next.title + " · $" + next.amount);
       } else if (next.status === "rejected") {
         audit(req, "co.rejected", next.number, next.title);
+      } else if (next.status === "submitted") {
+        audit(req, "co.submitted", next.number, next.title);
       }
     }
     if (Number(prev.amount) !== Number(next.amount)) {
@@ -432,22 +678,191 @@ async function main() {
   });
   crudDelete("changes");
 
-  // Time
+  // Time — hours / start-end / approve
   crudList("time");
   crudCreate("time", (req, body) => {
-    const crew = req.company.crew.find((c) => c.id === body.crewId);
-    return {
+    const role = roleOf(req);
+    let crewId = body.crewId;
+    if (role === "foreman") {
+      // Post own time (or allow posting for others? "own crew / assigned jobs" — own person)
+      crewId = req.session.crewId || crewId;
+      if (body.crewId && body.crewId !== req.session.crewId) {
+        const e = new Error("Foreman can only post own time");
+        e.status = 403;
+        throw e;
+      }
+    }
+    const crew = req.company.crew.find((c) => c.id === crewId);
+    let hours = Number(body.hours);
+    if ((!hours || hours <= 0) && body.start && body.end) {
+      hours = hoursFromRange(body.start, body.end) || 0;
+    }
+    hours = Number(hours) || 0;
+    const item = {
       id: uid("t"),
       jobId: body.jobId,
-      crewId: body.crewId,
+      crewId,
       date: body.date || seed.todayLocal(),
-      hours: Number(body.hours) || 0,
+      hours,
+      start: body.start || null,
+      end: body.end || null,
       rate: Number(body.rate != null ? body.rate : crew?.rate) || 0,
       note: body.note || "",
+      status: body.status === "approved" && auth.canApprove(req.session) ? "approved" : "pending",
+      clockedInAt: null,
+      approvedBy: null,
+      approvedAt: null,
+      rejectedReason: null,
     };
+    if (item.status === "approved") {
+      item.approvedBy = req.session.name;
+      item.approvedAt = new Date().toISOString();
+    }
+    return item;
   });
-  crudUpdate("time");
+  crudUpdate("time", (req, prev, next) => {
+    const role = roleOf(req);
+    if (role === "foreman") {
+      if (prev.crewId !== req.session.crewId) return { status: 403, error: "Not your time entry" };
+      if (prev.status === "approved") return { status: 403, error: "Already approved" };
+      if (next.status === "approved" || next.status === "rejected") {
+        return { status: 403, error: "Cannot approve time" };
+      }
+      if (next.start && next.end) {
+        const h = hoursFromRange(next.start, next.end);
+        if (h != null) next.hours = h;
+      }
+      next.status = "pending";
+      return null;
+    }
+    if (prev.status !== next.status) {
+      if (next.status === "approved") {
+        next.approvedBy = req.session.name;
+        next.approvedAt = new Date().toISOString();
+        audit(req, "time.approved", next.id, crewName(req, next.crewId) + " · " + next.hours + "h · " + next.date);
+        const crew = req.company.crew.find((c) => c.id === next.crewId);
+        if (crew?.userId) {
+          notify(req.session.companyId, crew.userId, "time_approved", "Time approved", next.date + " · " + next.hours + "h");
+        }
+      } else if (next.status === "rejected") {
+        next.approvedBy = req.session.name;
+        next.approvedAt = new Date().toISOString();
+        audit(req, "time.rejected", next.id, next.date + " · " + (next.rejectedReason || ""));
+      }
+    }
+    if (next.start && next.end && !req.body.hours) {
+      const h = hoursFromRange(next.start, next.end);
+      if (h != null) next.hours = h;
+    }
+    return null;
+  });
   crudDelete("time");
+
+  function crewName(req, crewId) {
+    return (req.company.crew || []).find((c) => c.id === crewId)?.name || crewId;
+  }
+
+  // Clock in / out
+  app.post("/api/time/clock-in", requireAuth, loadCompany, (req, res) => {
+    const role = roleOf(req);
+    const crewId = role === "foreman" ? req.session.crewId : req.body.crewId || req.session.crewId;
+    if (!crewId) return res.status(400).json({ error: "No crew member linked" });
+    const open = (req.company.time || []).find(
+      (t) => t.crewId === crewId && t.clockedInAt && !t.end && t.status !== "rejected"
+    );
+    if (open) return res.status(409).json({ error: "Already clocked in", entry: open });
+    const crew = req.company.crew.find((c) => c.id === crewId);
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const item = {
+      id: uid("t"),
+      jobId: req.body.jobId || null,
+      crewId,
+      date: seed.todayLocal(),
+      hours: 0,
+      start: hh + ":" + mm,
+      end: null,
+      rate: Number(crew?.rate) || 0,
+      note: req.body.note || "Clock-in",
+      status: "pending",
+      clockedInAt: now.toISOString(),
+      approvedBy: null,
+      approvedAt: null,
+    };
+    req.company.time.push(item);
+    store.saveCompany(req.company);
+    res.status(201).json(item);
+  });
+
+  app.post("/api/time/clock-out", requireAuth, loadCompany, (req, res) => {
+    const role = roleOf(req);
+    const crewId = role === "foreman" ? req.session.crewId : req.body.crewId || req.session.crewId;
+    const open = (req.company.time || []).find(
+      (t) => t.crewId === crewId && t.clockedInAt && !t.end
+    );
+    if (!open) return res.status(404).json({ error: "No open clock-in" });
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    open.end = hh + ":" + mm;
+    open.hours = hoursFromRange(open.start, open.end) || 0;
+    open.clockedInAt = open.clockedInAt; // keep
+    open.note = open.note && open.note !== "Clock-in" ? open.note : "Clocked shift";
+    if (req.body.jobId) open.jobId = req.body.jobId;
+    store.saveCompany(req.company);
+    res.json(open);
+  });
+
+  // Weekly timesheet summary
+  app.get("/api/time/timesheet", requireAuth, loadCompany, (req, res) => {
+    const week = req.query.week || seed.weekStart(seed.todayLocal());
+    const end = seed.addDays(week, 6);
+    let entries = (req.company.time || []).filter((t) => t.date >= week && t.date <= end);
+    if (roleOf(req) === "foreman" && req.session.crewId) {
+      entries = entries.filter((t) => t.crewId === req.session.crewId);
+    }
+    if (req.query.crewId) entries = entries.filter((t) => t.crewId === req.query.crewId);
+    if (req.query.jobId) entries = entries.filter((t) => t.jobId === req.query.jobId);
+
+    const byCrew = {};
+    entries.forEach((t) => {
+      if (!byCrew[t.crewId]) {
+        byCrew[t.crewId] = {
+          crewId: t.crewId,
+          name: crewName(req, t.crewId),
+          rate: Number(t.rate) || 0,
+          hours: 0,
+          approvedHours: 0,
+          pendingHours: 0,
+          labor: 0,
+          entries: [],
+        };
+      }
+      const row = byCrew[t.crewId];
+      const h = Number(t.hours) || 0;
+      row.hours += h;
+      if (t.status === "approved") row.approvedHours += h;
+      if (t.status === "pending") row.pendingHours += h;
+      row.labor += h * (Number(t.rate) || row.rate || 0);
+      row.entries.push(t);
+    });
+    const members = Object.values(byCrew).map((m) => ({
+      ...m,
+      ot: Math.max(0, m.hours - 40),
+      regular: Math.min(m.hours, 40),
+    }));
+    const totals = members.reduce(
+      (a, m) => ({
+        hours: a.hours + m.hours,
+        ot: a.ot + m.ot,
+        labor: a.labor + m.labor,
+        pending: a.pending + m.pendingHours,
+      }),
+      { hours: 0, ot: 0, labor: 0, pending: 0 }
+    );
+    res.json({ week, end, members, totals, entries });
+  });
 
   // Photos
   crudList("photos");
@@ -461,22 +876,104 @@ async function main() {
   crudUpdate("photos");
   crudDelete("photos");
 
-  // Equipment
+  // Equipment inventory
   crudList("equipment");
-  crudCreate("equipment", (_req, body) => ({
-    id: uid("e"),
-    jobId: body.jobId || null,
-    name: String(body.name || "").trim(),
-    status: body.status || "in",
-    notes: body.notes || "",
-  }));
-  crudUpdate("equipment");
+  crudCreate("equipment", (req, body) => {
+    if (roleOf(req) === "foreman") {
+      const e = new Error("Forbidden");
+      e.status = 403;
+      throw e;
+    }
+    return {
+      id: uid("e"),
+      jobId: body.jobId || null,
+      name: String(body.name || "").trim(),
+      status: body.status || "in",
+      notes: body.notes || "",
+      meter: body.meter != null && body.meter !== "" ? Number(body.meter) : null,
+      lastServiceHours:
+        body.lastServiceHours != null && body.lastServiceHours !== ""
+          ? Number(body.lastServiceHours)
+          : null,
+      maintenanceDue: body.maintenanceDue || "",
+      maintenanceNote: body.maintenanceNote || "",
+    };
+  });
+  crudUpdate("equipment", (req, prev, next) => {
+    if (roleOf(req) === "foreman") {
+      // Foreman can update status / job tie / meter while logging use
+      next.name = prev.name;
+    }
+    return null;
+  });
   crudDelete("equipment");
 
-  // Invoices — audit money actions
+  // Equipment hours
+  crudList("equipmentHours");
+  crudCreate("equipmentHours", (req, body) => {
+    const eq = (req.company.equipment || []).find((e) => e.id === body.equipmentId);
+    const item = {
+      id: uid("eh"),
+      equipmentId: body.equipmentId,
+      jobId: body.jobId || eq?.jobId || null,
+      date: body.date || seed.todayLocal(),
+      hours: Number(body.hours) || 0,
+      meter: body.meter != null && body.meter !== "" ? Number(body.meter) : null,
+      note: body.note || "",
+      by: body.by || req.session.name,
+      created: new Date().toISOString(),
+    };
+    if (eq && item.meter != null) {
+      eq.meter = item.meter;
+    }
+    if (eq && body.jobId) eq.jobId = body.jobId;
+    return item;
+  });
+  crudUpdate("equipmentHours", (req, prev, next) => {
+    if (roleOf(req) === "foreman" && prev.by && prev.by !== req.session.name) {
+      return { status: 403, error: "Forbidden" };
+    }
+    return null;
+  });
+  crudDelete("equipmentHours");
+
+  app.get("/api/equipment/utilization", requireAuth, loadCompany, (req, res) => {
+    const week = req.query.week || seed.weekStart(seed.todayLocal());
+    const end = seed.addDays(week, 6);
+    const logs = (req.company.equipmentHours || []).filter((h) => h.date >= week && h.date <= end);
+    const byUnit = {};
+    (req.company.equipment || []).forEach((e) => {
+      byUnit[e.id] = {
+        equipmentId: e.id,
+        name: e.name,
+        status: e.status,
+        jobId: e.jobId,
+        meter: e.meter,
+        lastServiceHours: e.lastServiceHours,
+        maintenanceDue: e.maintenanceDue,
+        hours: 0,
+        logs: [],
+      };
+    });
+    logs.forEach((h) => {
+      if (!byUnit[h.equipmentId]) {
+        byUnit[h.equipmentId] = {
+          equipmentId: h.equipmentId,
+          name: "Unknown",
+          hours: 0,
+          logs: [],
+        };
+      }
+      byUnit[h.equipmentId].hours += Number(h.hours) || 0;
+      byUnit[h.equipmentId].logs.push(h);
+    });
+    res.json({ week, end, units: Object.values(byUnit), totalHours: logs.reduce((a, h) => a + (Number(h.hours) || 0), 0) });
+  });
+
+  // Invoices
   crudList("invoices");
   crudCreate("invoices", (req, body) => {
-    if (req.session.role === "field") {
+    if (!auth.canMoney(req.session)) {
       const e = new Error("Forbidden");
       e.status = 403;
       throw e;
@@ -494,7 +991,7 @@ async function main() {
     return item;
   });
   crudUpdate("invoices", (req, prev, next) => {
-    if (req.session.role === "field") return { status: 403, error: "Forbidden" };
+    if (!auth.canMoney(req.session)) return { status: 403, error: "Forbidden" };
     if (prev.status !== next.status) {
       audit(req, "invoice." + next.status, next.number, next.number + " · $" + next.amount);
       if (next.status === "sent") {
@@ -514,7 +1011,7 @@ async function main() {
   });
   crudDelete("invoices");
 
-  // Safety toolbox talks
+  // Safety
   crudList("safety");
   crudCreate("safety", (req, body) => ({
     id: uid("talk"),
@@ -522,17 +1019,22 @@ async function main() {
     jobId: body.jobId || null,
     date: body.date || seed.todayLocal(),
     topic: String(body.topic || "").trim(),
-    attendees: Array.isArray(body.attendees) ? body.attendees : String(body.attendees || "").split(",").map((s) => s.trim()).filter(Boolean),
+    attendees: Array.isArray(body.attendees)
+      ? body.attendees
+      : String(body.attendees || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
     notes: body.notes || "",
     by: body.by || req.session.name,
   }));
   crudUpdate("safety");
   crudDelete("safety");
 
-  // Materials / POs
+  // Materials
   crudList("materials");
   crudCreate("materials", (req, body) => {
-    if (req.session.role === "field") {
+    if (!auth.canEdit(req.session)) {
       const e = new Error("Forbidden");
       e.status = 403;
       throw e;
@@ -549,13 +1051,16 @@ async function main() {
       due: body.due || null,
     };
   });
-  crudUpdate("materials");
+  crudUpdate("materials", (req) => {
+    if (!auth.canEdit(req.session)) return { status: 403, error: "Forbidden" };
+    return null;
+  });
   crudDelete("materials");
 
-  // Subcontractors
+  // Subs
   crudList("subcontractors");
   crudCreate("subcontractors", (req, body) => {
-    if (req.session.role === "field") {
+    if (!auth.canEdit(req.session)) {
       const e = new Error("Forbidden");
       e.status = 403;
       throw e;
@@ -572,11 +1077,15 @@ async function main() {
       notes: body.notes || "",
     };
   });
-  crudUpdate("subcontractors");
+  crudUpdate("subcontractors", (req) => {
+    if (!auth.canEdit(req.session)) return { status: 403, error: "Forbidden" };
+    return null;
+  });
   crudDelete("subcontractors");
 
-  // Assign schedule → notify
+  // Schedule notify
   app.post("/api/schedule/:id/notify", requireAuth, loadCompany, (req, res) => {
+    if (!auth.canEdit(req.session)) return res.status(403).json({ error: "Forbidden" });
     const item = req.company.schedule.find((x) => x.id === req.params.id);
     if (!item) return res.status(404).json({ error: "Not found" });
     const crew = req.company.crew.find((c) => c.id === item.crewId);
@@ -591,6 +1100,23 @@ async function main() {
       );
     }
     res.json({ ok: true });
+  });
+
+  // Who's where today
+  app.get("/api/crew/today", requireAuth, loadCompany, (req, res) => {
+    const today = seed.todayLocal();
+    const assignments = (req.company.schedule || [])
+      .filter((s) => s.date === today)
+      .map((s) => ({
+        ...s,
+        crewName: crewName(req, s.crewId),
+        jobName: (req.company.jobs.find((j) => j.id === s.jobId) || {}).name || "—",
+      }));
+    const roster = (req.company.crew || []).map((c) => ({
+      ...c,
+      today: assignments.filter((a) => a.crewId === c.id),
+    }));
+    res.json({ date: today, assignments, roster });
   });
 
   // Uploads
@@ -608,7 +1134,7 @@ async function main() {
 
   // Audit
   app.get("/api/audit", requireAuth, (req, res) => {
-    if (req.session.role === "field") return res.status(403).json({ error: "Forbidden" });
+    if (!auth.canEdit(req.session)) return res.status(403).json({ error: "Forbidden" });
     res.json(store.getAudit(req.session.companyId, Number(req.query.limit) || 200));
   });
 
@@ -640,28 +1166,48 @@ async function main() {
 
   // CSV exports
   app.get("/api/export/time.csv", requireAuth, loadCompany, (req, res) => {
-    const crewName = (id) => req.company.crew.find((c) => c.id === id)?.name || id;
-    const jobName = (id) => req.company.jobs.find((j) => j.id === id)?.name || id;
+    const cName = (id) => req.company.crew.find((c) => c.id === id)?.name || id;
+    const jName = (id) => req.company.jobs.find((j) => j.id === id)?.name || id;
     const rows = req.company.time.map((t) => ({
       date: t.date,
-      job: jobName(t.jobId),
-      crew: crewName(t.crewId),
+      job: jName(t.jobId),
+      crew: cName(t.crewId),
       hours: t.hours,
+      start: t.start || "",
+      end: t.end || "",
       rate: t.rate,
       amount: (Number(t.hours) * Number(t.rate)).toFixed(2),
+      status: t.status || "",
       note: t.note || "",
     }));
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", 'attachment; filename="time.csv"');
-    res.send(toCsv(rows, ["date", "job", "crew", "hours", "rate", "amount", "note"]));
+    res.send(toCsv(rows, ["date", "job", "crew", "hours", "start", "end", "rate", "amount", "status", "note"]));
+  });
+
+  app.get("/api/export/equipment-hours.csv", requireAuth, loadCompany, (req, res) => {
+    const eName = (id) => req.company.equipment.find((e) => e.id === id)?.name || id;
+    const jName = (id) => req.company.jobs.find((j) => j.id === id)?.name || id;
+    const rows = (req.company.equipmentHours || []).map((h) => ({
+      date: h.date,
+      equipment: eName(h.equipmentId),
+      job: jName(h.jobId),
+      hours: h.hours,
+      meter: h.meter ?? "",
+      by: h.by || "",
+      note: h.note || "",
+    }));
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="equipment-hours.csv"');
+    res.send(toCsv(rows, ["date", "equipment", "job", "hours", "meter", "by", "note"]));
   });
 
   app.get("/api/export/invoices.csv", requireAuth, loadCompany, (req, res) => {
-    if (req.session.role === "field") return res.status(403).json({ error: "Forbidden" });
-    const jobName = (id) => req.company.jobs.find((j) => j.id === id)?.name || id;
+    if (!auth.canMoney(req.session)) return res.status(403).json({ error: "Forbidden" });
+    const jName = (id) => req.company.jobs.find((j) => j.id === id)?.name || id;
     const rows = req.company.invoices.map((inv) => ({
       number: inv.number,
-      job: jobName(inv.jobId),
+      job: jName(inv.jobId),
       amount: inv.amount,
       status: inv.status,
       due: inv.due || "",
@@ -687,15 +1233,15 @@ async function main() {
     res.send(toCsv(rows, ["name", "client", "address", "status", "portalCode", "start", "end"]));
   });
 
-  // Portal (share code)
+  // Portal
   app.post("/api/portal/login", (req, res) => {
     const code = String(req.body.code || "")
       .trim()
       .toUpperCase();
-    const companies = store.listCompanies();
+    const companiesMap = store.listCompanies();
     let found = null;
     let companyId = null;
-    Object.values(companies).forEach((co) => {
+    Object.values(companiesMap).forEach((co) => {
       (co.jobs || []).forEach((j) => {
         if (j.portalCode === code) {
           found = j;
@@ -707,9 +1253,24 @@ async function main() {
     const co = store.getCompany(companyId);
     const photos = (co.photos || []).filter((p) => p.jobId === found.id);
     const changes = (co.changes || []).filter((c) => c.jobId === found.id);
+    const reports = (co.reports || [])
+      .filter((r) => r.jobId === found.id && (r.status === "submitted" || r.status === "approved"))
+      .map((r) => ({
+        number: r.number,
+        date: r.date,
+        weather: r.weather,
+        workDone: r.workDone,
+        status: r.status,
+      }));
     const invoices = (co.invoices || [])
       .filter((i) => i.jobId === found.id && i.status !== "draft")
-      .map((i) => ({ number: i.number, amount: i.amount, status: i.status, due: i.due, description: i.description }));
+      .map((i) => ({
+        number: i.number,
+        amount: i.amount,
+        status: i.status,
+        due: i.due,
+        description: i.description,
+      }));
     res.json({
       job: {
         id: found.id,
@@ -719,6 +1280,7 @@ async function main() {
         status: found.status,
         start: found.start,
         end: found.end,
+        portalCode: found.portalCode,
       },
       companyName: co.name,
       photos,
@@ -730,10 +1292,11 @@ async function main() {
         description: c.description,
       })),
       invoices,
+      reports,
     });
   });
 
-  // Stripe stubs — no live charges
+  // Stripe stubs
   app.get("/api/stripe/config", requireAuth, (_req, res) => {
     res.json({
       stub: true,
@@ -759,12 +1322,10 @@ async function main() {
     res.json({ stub: true, received: true });
   });
 
-  // Health
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, name: "siteflow-next", port: PORT });
   });
 
-  // Error handler for thrown errors in create hooks
   app.use((err, _req, res, _next) => {
     if (err && err.status) return res.status(err.status).json({ error: err.message || err.error || "Error" });
     if (err && err.name === "MulterError") return res.status(400).json({ error: err.message });
@@ -772,7 +1333,6 @@ async function main() {
     res.status(500).json({ error: "Server error" });
   });
 
-  // Static frontend
   const pub = path.join(__dirname, "public");
   app.use(express.static(pub));
   app.get("*", (req, res, next) => {
